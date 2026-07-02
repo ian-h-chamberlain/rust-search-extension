@@ -42,7 +42,7 @@
                 if (location.hostname === "docs.rs") { // docs.rs pages
                     // Parse crate info from location pathname.
                     let [crateName, crateVersion, libName] = location.pathname.slice(1).split("/");
-                    // Since this PR (https://github.com/rust-lang/docs.rs/pull/1527) merged, 
+                    // Since this PR (https://github.com/rust-lang/docs.rs/pull/1527) merged,
                     // the latest version path has changed:
                     // from https://docs.rs/tokio/1.14.0/tokio/ to https://docs.rs/tokio/latest/tokio/
                     //
@@ -96,10 +96,13 @@
         if (!searchIndexJs) {
             // This PR https://github.com/rust-lang/rust/pull/98124 use another way to load search-index:
             // by concatenating the paths to get a full search-index.js file, see resourcePath() function.
-            // 
-            // Fallback to legacy "data-search-index-js" or "data-search-js", which are a temporary stage 
+            //
+            // Fallback to legacy "data-search-index-js" or "data-search-js", which are a temporary stage
             // in librustdoc. Some crate could depends on this librustdoc. such as https://docs.rs/futures/0.3.14
-            searchIndexJs = resourcePath("search-index", ".js") || getVar('search-index-js') || getVar('search-js');
+          searchIndexJs = resourcePath("search-index", ".js") ||
+            resourcePath('root', '.js') ||
+            getVar('search-index-js') ||
+            getVar('search-js');
         }
 
 
