@@ -5,7 +5,7 @@ include build.mk
 
 # Override the included `assert` target.
 assert:
-	@test -d extension/manage && echo "Assert extension/manage success!\n" || (echo "No extension/manage found!\n Running `make manage`"; make manage)
+	@test -f extension/manage/index.html && echo "Assert extension/manage success!\n" || (echo "No extension/manage/index.html found!\n Running `make manage`"; make manage)
 
 # Build manage css and html
 manage:
