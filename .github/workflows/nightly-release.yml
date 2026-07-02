@@ -11,9 +11,52 @@ on:
       - master
 
 jobs:
+  check:
+    name: Check for new commits
+    runs-on: ubuntu-latest
+    # Always run for PRs and manual triggers, only check hash for scheduled runs
+    if: github.event_name != 'schedule' || true
+    outputs:
+      should_build: ${{ steps.check_hash.outputs.should_build }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if commit hash changed since last nightly
+        id: check_hash
+        run: |
+          if [[ "${{ github.event_name }}" != "schedule" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Non-scheduled run, always building."
+            exit 0
+          fi
+
+          CURRENT_SHA=$(git rev-parse HEAD)
+          echo "Current HEAD: $CURRENT_SHA"
+
+          # Get the commit SHA that the 'nightly' tag points to (if it exists)
+          LAST_NIGHTLY_SHA=$(gh release view nightly --json targetCommitish --jq '.targetCommitish' 2>/dev/null || echo "")
+
+          if [[ -z "$LAST_NIGHTLY_SHA" ]]; then
+            echo "No existing nightly release found, building."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          elif [[ "$CURRENT_SHA" == "$LAST_NIGHTLY_SHA" ]]; then
+            echo "Commit hash unchanged ($CURRENT_SHA), skipping build."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "New commits since last nightly ($LAST_NIGHTLY_SHA -> $CURRENT_SHA), building."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
     name: Build Nightly Release
     runs-on: ubuntu-latest
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
 
     steps:
       - name: Checkout code
@@ -46,6 +89,21 @@ jobs:
         run: |
           npm install -g esbuild web-ext
 
+      - name: Patch version with nightly build info
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DATE=$(date +'%Y%m%d')
+          # Extract base version from manifest.jsonnet (first version line without conflict markers)
+          BASE_VERSION=$(grep -m1 "^local version = " manifest.jsonnet | sed "s/local version = '//;s/';//")
+          # Use numeric-only version: base.YYYYMMDD (valid for both Chrome and Firefox)
+          NIGHTLY_VERSION="${BASE_VERSION}.${DATE}"
+          echo "nightly_version=$NIGHTLY_VERSION" >> $GITHUB_OUTPUT
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "Patching version to: $NIGHTLY_VERSION (commit: $SHORT_SHA)"
+          # Replace all version strings in manifest.jsonnet
+          sed -i "s/local version = '[^']*'/local version = '${NIGHTLY_VERSION}'/" manifest.jsonnet
+
       - name: Build Chrome package
         run: make pack chrome
 
@@ -73,17 +131,34 @@ jobs:
         id: sha
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Create Release
+      - name: Prepare release assets
         if: github.event_name != 'pull_request'
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: find_packages
+        run: |
+          # Find the built packages
+          CHROME=$(ls web-ext-artifacts/chrome-rust-search-extension-*.zip)
+          FIREFOX=$(ls web-ext-artifacts/firefox-rust-search-extension-*.zip)
+          EDGE=$(ls web-ext-artifacts/edge-rust-search-extension-*.zip)
+
+          # Copy with stable names for the rolling nightly release
+          cp "$CHROME" web-ext-artifacts/chrome-rust-search-extension-nightly.zip
+          cp "$FIREFOX" web-ext-artifacts/firefox-rust-search-extension-nightly.zip
+          cp "$EDGE" web-ext-artifacts/edge-rust-search-extension-nightly.zip
+
+          # Original names (include nightly version with date+sha) for the dated release
+          echo "chrome_package=$CHROME" >> $GITHUB_OUTPUT
+          echo "firefox_package=$FIREFOX" >> $GITHUB_OUTPUT
+          echo "edge_package=$EDGE" >> $GITHUB_OUTPUT
+
+      - name: Create/update rolling nightly release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: nightly-${{ steps.date.outputs.date }}-${{ steps.sha.outputs.sha }}
-          release_name: Nightly Release ${{ steps.date.outputs.date }}
+          tag_name: nightly
+          name: Nightly Release (latest)
           body: |
-            Automated nightly build from commit ${{ github.sha }}
+            Automated nightly build from commit ${{ github.sha }} (${{ steps.date.outputs.date }})
+            Version: ${{ steps.version.outputs.nightly_version }} (commit: ${{ steps.version.outputs.short_sha }})
 
             ## Installation
 
@@ -103,53 +178,44 @@ jobs:
             **Note:** This is a nightly build and may contain experimental features or bugs.
           draft: false
           prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            web-ext-artifacts/chrome-rust-search-extension-nightly.zip
+            web-ext-artifacts/firefox-rust-search-extension-nightly.zip
+            web-ext-artifacts/edge-rust-search-extension-nightly.zip
 
-      - name: Find built packages
+      - name: Create dated nightly release
         if: github.event_name != 'pull_request'
-        id: find_packages
-        run: |
-          echo "chrome_package=$(ls web-ext-artifacts/chrome-rust-search-extension-*.zip)" >> $GITHUB_OUTPUT
-          echo "firefox_package=$(ls web-ext-artifacts/firefox-rust-search-extension-*.zip)" >> $GITHUB_OUTPUT
-          echo "edge_package=$(ls web-ext-artifacts/edge-rust-search-extension-*.zip)" >> $GITHUB_OUTPUT
-
-      - name: Upload Chrome Release Asset
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ steps.find_packages.outputs.chrome_package }}
-          asset_name: chrome-rust-search-extension-nightly-${{ steps.date.outputs.date }}.zip
-          asset_content_type: application/zip
+          tag_name: nightly-${{ steps.date.outputs.date }}-${{ steps.sha.outputs.sha }}
+          name: Nightly Release ${{ steps.date.outputs.date }}
+          body: |
+            Automated nightly build from commit ${{ github.sha }}
+            Version: ${{ steps.version.outputs.nightly_version }} (commit: ${{ steps.version.outputs.short_sha }})
 
-      - name: Upload Firefox Release Asset
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ steps.find_packages.outputs.firefox_package }}
-          asset_name: firefox-rust-search-extension-nightly-${{ steps.date.outputs.date }}.zip
-          asset_content_type: application/zip
+            ## Installation
 
-      - name: Upload Edge Release Asset
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ steps.find_packages.outputs.edge_package }}
-          asset_name: edge-rust-search-extension-nightly-${{ steps.date.outputs.date }}.zip
-          asset_content_type: application/zip
+            ### Chrome/Edge
+            1. Download the Chrome or Edge package
+            2. Extract the zip file
+            3. Open chrome://extensions/ (or edge://extensions/)
+            4. Enable "Developer mode"
+            5. Click "Load unpacked" and select the extracted folder
 
-      - name: Clean up old nightly releases
-        if: github.event_name != 'pull_request'
-        uses: dev-drprasad/delete-older-releases@v0.3.2
-        with:
-          keep_latest: 1
-          delete_tag_pattern: nightly
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            ### Firefox
+            1. Download the Firefox package
+            2. Open about:debugging#/runtime/this-firefox
+            3. Click "Load Temporary Add-on"
+            4. Select the downloaded .zip file
+
+            **Note:** This is a nightly build and may contain experimental features or bugs.
+          draft: false
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            ${{ steps.find_packages.outputs.chrome_package }}
+            ${{ steps.find_packages.outputs.firefox_package }}
+            ${{ steps.find_packages.outputs.edge_package }}

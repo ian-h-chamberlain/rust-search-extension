@@ -11,11 +11,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - run: |
         git fetch --no-tags --prune --depth=1 origin +refs/heads/*:refs/remotes/origin/*
     - name: Download crates.io dumped database
       run: |
         wget https://static.crates.io/db-dump.tar.gz -O /tmp/db-dump.tar.gz
-    - name: Deloy crates index
+    - name: Deploy crates index
       run: ./scripts/deploy-crates-index.sh
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

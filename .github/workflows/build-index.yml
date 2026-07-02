@@ -7,7 +7,7 @@ jobs:
     name: Build index
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: "Build index"
         run: |
           cd rust
@@ -22,8 +22,7 @@ jobs:
           RUST_BACKTRACE=full cargo run --target-dir /tmp --manifest-path=Cargo.toml rfcs -r /tmp/rfc-index -d /tmp/rfcs.js
           zip /tmp/index.zip /tmp/*.js
       - name: "Upload Index Artifact"
-        uses: actions/upload-artifact@master
+        uses: actions/upload-artifact@v4
         with:
           name: index.zip
           path: /tmp/index.zip
-
